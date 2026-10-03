@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+#
+# Pre-commit secret guard.
+#
+# This exists because a sample credential was once committed here in
+# .env.example. The lesson is not "be more careful": it is that the check has to
+# be automatic, because care does not survive the first distraction.
+#
+# Three layers, so no single failure lets a secret through:
+#
+#   1. Files that hold secrets by definition (.env, *.pem, *.key, auth.json) are
+#      refused outright, whatever they happen to contain today.
+#   2. gitleaks scans the staged diff with its full rule set, narrowed by the
+#      allowlists in .gitleaks.toml.
+#   3. A built-in check runs even when gitleaks is missing, so an absent tool
+#      degrades the scan rather than disabling it.
+#
+# Layer 3 is deliberately conservative. A scanner that cries wolf gets bypassed
+# with --no-verify, and then it protects nothing, so unambiguous placeholders and
+# documented examples are filtered rather than reported.
+#
+# Rewriting history does not un-publish a secret. Anything that was ever pushed
+# is compromised and must be rotated.
+
+set -uo pipefail
+
+# Never committed, regardless of content. .env.example is the documented
+# exception and must contain placeholders only.
+FORBIDDEN_PATHS='(^|/)\.env$|(^|/)\.env\.[^/]+$|\.pem$|\.key$|\.p12$|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|(^|/)\.netrc$|(^|/)\.pgpass$|(^|/)credentials$|(^|/)auth\.json$'
+FORBIDDEN_EXCEPTIONS='(^|/)\.env\.example$'
+
+# The scanner's own files contain credential-shaped regexes by necessity.
+SELF_EXCLUDE='^\.gitleaks\.toml$|^\.githooks/'
+
+# Passwords that are placeholders rather than secrets.
+PLACEHOLDER_PASSWORDS='^(password|pass|passwd|pwd|secret|changeme|change_me|changeit|redacted|example|placeholder|your_password|yourpassword|x+|s3cret|dummy|fake|test)$'
+
+# Hosts that are examples or local, where a DSN is documentation not a secret.
+SAFE_HOSTS='^(host|localhost|127\.0\.0\.1|::1|db|h|postgres|example\.com|db\.example\.com|db\.internal|host\.docker\.internal)$'
+
+fail() {
+  local headline=$1
+  shift
+  {
+    echo ""
+    echo "  COMMIT BLOCKED: ${headline}"
+    echo ""
+    for line in "$@"; do echo "  ${line}"; done
+    echo ""
+    echo "  Remove the value and read it from the environment instead, or add a"
+    echo "  narrowly-scoped allowlist entry in .gitleaks.toml. Prefer that over"
+    echo "  --no-verify: bypassing disables every layer above."
+    echo ""
+    echo "  If a real credential was committed, rotate it. It is compromised the"
+    echo "  moment it leaves this machine, history rewrite or not."
+    echo ""
+  } >&2
+  exit 1
+}
+
+staged_files=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if [ -z "$staged_files" ]; then
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Layer 1: refuse files that hold secrets by definition.
+# ---------------------------------------------------------------------------
+offenders=$(printf '%s\n' "$staged_files" \
+  | grep -E "$FORBIDDEN_PATHS" \
+  | grep -Ev "$FORBIDDEN_EXCEPTIONS" || true)
+
+if [ -n "$offenders" ]; then
+  fail "these files must never be committed:" \
+       "$(printf '%s' "$offenders" | sed 's/^/    /')" \
+       "" \
+       "Real values belong in .env (gitignored); .env.example holds placeholders."
+fi
+
+# ---------------------------------------------------------------------------
+# Layer 3: built-in patterns over the staged diff.
+# ---------------------------------------------------------------------------
+scannable=$(printf '%s\n' "$staged_files" | grep -Ev "$SELF_EXCLUDE" || true)
+
+builtin_hits=""
+
+if [ -n "$scannable" ]; then
+  added=$(git diff --cached --unified=0 --no-color -- $(printf '%s\n' "$scannable" | tr '\n' ' ') \
+    | grep -E '^\+' \
+    | grep -Ev '^\+\+\+' \
+    | grep -v 'gitleaks:allow' || true)
+
+  flag() {
+    local label=$1 pattern=$2
+    local hits
+    hits=$(printf '%s\n' "$added" | grep -E "$pattern" || true)
+    if [ -n "$hits" ]; then
+      builtin_hits="${builtin_hits}    ${label}:
+$(printf '%s\n' "$hits" | sed 's/^/        /')
+"
+    fi
+  }
+
+  # Patterns with effectively no false positives.
+  flag "private key material"       'BEGIN [A-Z ]*PRIVATE KEY'
+  flag "AWS access key id"          'AKIA[0-9A-Z]{16}'
+  flag "GitHub token"               'gh[pousr]_[A-Za-z0-9]{20,}'
+  flag "OpenAI-style API key"       'sk-[A-Za-z0-9_-]{20,}'
+  flag "Slack token"                'xox[baprs]-[A-Za-z0-9-]{10,}'
+  flag "ngrok authtoken"            'NGROK_AUTHTOKEN=[A-Za-z0-9_]{20,}'
+  flag "JSON Web Token"             'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+  flag "inline credential literal"  '(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"'$<{]{8,}["'"'"']'
+
+  # A DSN carrying a password needs judgement: extract each candidate, then keep
+  # only the ones whose password and host are not recognisable placeholders.
+  dsn_reports=""
+  while IFS= read -r dsn; do
+    [ -n "$dsn" ] || continue
+
+    userinfo=${dsn#*://}
+    userinfo=${userinfo%%@*}
+    password=${userinfo#*:}
+    # No colon means no password in the userinfo.
+    [ "$password" != "$userinfo" ] || continue
+
+    hostport=${dsn##*@}
+    host=${hostport%%:*}
+    host=${host%%/*}
+
+    lowered_password=$(printf '%s' "$password" | tr '[:upper:]' '[:lower:]')
+    lowered_host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
+
+    if printf '%s' "$lowered_password" | grep -Eq "$PLACEHOLDER_PASSWORDS"; then
+      continue
+    fi
+    if printf '%s' "$lowered_host" | grep -Eq "$SAFE_HOSTS"; then
+      continue
+    fi
+
+    dsn_reports="${dsn_reports}    DSN with a hard-coded password:
+        ${dsn}
+"
+  done <<< "$(printf '%s\n' "$added" | grep -oE 'postgres(ql)?://[^@[:space:]"'"'"'\`]+@[^[:space:]"'"'"'\`,;)]+' || true)"
+
+  if [ -n "$dsn_reports" ]; then
+    builtin_hits="${builtin_hits}${dsn_reports}"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Layer 2: gitleaks over the staged diff.
+# ---------------------------------------------------------------------------
+gitleaks_findings=""
+gitleaks_note=""
+
+if command -v gitleaks >/dev/null 2>&1; then
+  report=$(mktemp)
+
+  if ! gitleaks git --staged --no-banner --redact --config .gitleaks.toml >"$report" 2>&1; then
+    gitleaks_findings=$(sed 's/^/    /' "$report")
+    gitleaks_note="    (gitleaks)"
+  fi
+
+  rm -f "$report"
+fi
+
+if [ -n "$builtin_hits" ] || [ -n "$gitleaks_findings" ]; then
+  fail "a credential appears to be staged." \
+       "${builtin_hits}${gitleaks_note}" \
+       "${gitleaks_findings}"
+fi
+
+exit 0

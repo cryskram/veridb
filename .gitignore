@@ -1,0 +1,43 @@
+# Binaries
+/bin/
+/dist/
+
+# Go
+*.exe
+*.test
+*.out
+/vendor/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# devenv / direnv
+/.devenv/
+/.direnv/
+devenv.local.nix
+devenv.local.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local data
+data/
+tmp/
+
+# Secrets
+*.pem
+*.key
+
+# Local configuration that names real infrastructure
+/configs/*.local.yaml

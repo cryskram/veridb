@@ -1,0 +1,64 @@
+# Gitleaks configuration for VeriDB.
+#
+# The default rules are kept; this file only teaches gitleaks about strings that
+# are deliberately present in this repository and are not credentials: test
+# fixtures and the placeholder forms used in documentation.
+#
+# The point of this file is to keep the scanner credible. A secret scanner that
+# reports false positives gets bypassed with --no-verify, and then it stops
+# protecting anything.
+
+title = "VeriDB"
+
+[extend]
+# Keep every rule gitleaks ships with.
+useDefault = true
+
+# Derived and vendored trees. These are gitignored, so they can never be
+# committed, but `make secrets` scans the filesystem too and the Go module cache
+# is full of third-party test fixtures that look like credentials. Reporting them
+# would bury the one finding that matters.
+[[allowlists]]
+description = "Derived and vendored trees"
+paths = [
+  '''(^|/)\.devenv/''',
+  '''(^|/)\.direnv/''',
+  '''(^|/)tmp/''',
+  '''(^|/)bin/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)\.git/''',
+]
+
+[[allowlists]]
+description = "Intentional test fixtures and documentation placeholders"
+
+# Paths that never contain real credentials.
+paths = [
+  '''(?i)^internal/config/config_test\.go$''',
+  '''(?i)^internal/viewer/(store|server)_test\.go$''',
+  '''(?i)^internal/audit/audit_test\.go$''',
+  '''(?i)^\.gitleaks\.toml$''',
+  '''(?i)^\.githooks/pre-commit$''',
+  '''(?i)^docs/''',
+  '''(?i)^README\.md$''',
+]
+
+# Placeholder and fixture values that look like credentials but are not.
+regexes = [
+  # Documentation placeholders.
+  '''postgres://USER:PASSWORD@HOST:PORT/''',
+  '''postgres://user:pass@''',
+  '''postgres://user:password@''',
+  '''postgres://dev:dev@localhost''',
+  '''postgres://u:p@h''',
+  # Test fixtures used by the config and viewer tests.
+  '''postgres://reader:s3cret@db\.example\.com''',
+  '''postgres://svc@db\.internal''',
+  # Obvious placeholders in .env.example and compose.
+  '''CHANGE_ME''',
+  '''<VIEWER_TOKEN>''',
+  '''NGROK_AUTHTOKEN=''',
+  '''VIEWER_TOKEN=(CHANGE_ME|t|testtoken123|composetoken|secret123)''',
+  # A deliberately weak password used only by the guard tests.
+  '''"hunter2"''',
+]

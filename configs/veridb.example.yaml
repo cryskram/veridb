@@ -1,0 +1,123 @@
+# VeriDB configuration - minimal starting point
+# ============================================
+#
+# Copy this file, point it at your own database, and grow it from there:
+#
+#   cp configs/veridb.example.yaml configs/veridb.local.yaml
+#   VERIDB_CONFIG=configs/veridb.local.yaml make config-check
+#
+# configs/veridb.yaml shows the same file scaled to several databases on one
+# host with per-database overrides. See docs/configuration.md for every key.
+
+server:
+  name: veridb
+  version: 0.2.0
+
+# ---------------------------------------------------------------------------
+# A connection is a host. Credentials come from the environment, never from
+# this file.
+# ---------------------------------------------------------------------------
+connections:
+  local:
+    driver: postgres
+    # {database} lets one connection serve several databases: it is replaced
+    # with each database's physical name.
+    #   VERIDB_LOCAL_DSN=postgres://dev:dev@localhost:5432/{database}
+    dsn_env: VERIDB_LOCAL_DSN
+    maintenance_database: postgres
+    pool:
+      max_conns: 5
+      min_conns: 0
+
+# ---------------------------------------------------------------------------
+# Which tool groups exist at all. Anything not listed here defaults to the
+# values below, so this block is optional.
+#
+#   schema  list_schemas, list_tables, describe_table, search_columns
+#   query   query
+#   explain explain_query
+#   sample  sample_rows
+#   health  live probes in veridb_status
+#   write   execute, run_in_transaction
+# ---------------------------------------------------------------------------
+services:
+  schema: true
+  query: true
+  explain: true
+  sample: true
+  health: true
+  write: false
+  admin: false
+
+# ---------------------------------------------------------------------------
+# The policy every database inherits. A database overrides only what it needs.
+# ---------------------------------------------------------------------------
+defaults:
+  # Reads only. This also sets default_transaction_read_only on the server, so
+  # PostgreSQL itself refuses writes as a second line of defence.
+  read_only: true
+
+  # Applied to every statement.
+  max_rows: 100
+  statement_timeout: 15s
+  max_affected_rows: 1000
+
+  # Scope. deny_schemas is always subtracted, even from allow_schemas.
+  allow_schemas: [public]
+  deny_schemas: [pg_catalog, information_schema, pg_toast]
+
+  # Relations an agent never sees. Handy for migration bookkeeping tables.
+  deny_tables:
+    - "*.migrations"
+    - "databasechangelog*"
+    - "_prisma_migrations"
+    - "alembic_version"
+
+  # Columns whose values are replaced with [redacted] before the agent sees
+  # them. The response still names them, so the agent knows they exist.
+  redact_columns:
+    - "*password*"
+    - "*.pan"
+    - "*.aadhaar"
+
+# ---------------------------------------------------------------------------
+# The allowlist. Only databases named here are reachable.
+# ---------------------------------------------------------------------------
+databases:
+  myapp_dev:
+    connection: local
+    description: Local development database
+
+  # A second database on the same host needs nothing but its name.
+  # myapp_test:
+  #   connection: local
+  #   description: Throwaway database used by the test suite
+
+# ---------------------------------------------------------------------------
+# Every call is recorded, including the ones that are refused.
+# ---------------------------------------------------------------------------
+audit:
+  enabled: true
+  sinks: [stderr, file]
+  file: tmp/audit/veridb-audit.jsonl
+  include_sql: true
+  # Bind parameters are where PII usually hides, so they are off by default.
+  include_params: false
+  max_value_len: 512
+
+# ---------------------------------------------------------------------------
+# To let an agent write, opt one database in explicitly. Both the policy flag
+# and the service are required, so this is always a deliberate two-part act.
+# ---------------------------------------------------------------------------
+#
+# databases:
+#   myapp_dev:
+#     connection: local
+#     read_only: false
+#     allow_write: true        # INSERT and UPDATE
+#     allow_delete: false      # still no DELETE
+#     allow_ddl: false
+#     statement_timeout: 5s
+#     max_affected_rows: 25
+#     services:
+#       write: true

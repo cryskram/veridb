@@ -1,0 +1,233 @@
+# VeriDB configuration
+# ===================
+#
+# One file controls everything: which databases are reachable, which tool groups
+# (services) are exposed, the safety policy for each database, and where tool
+# calls are audited.
+#
+# Credentials never live here. Every value written as ${VAR} is read from the
+# environment, and `*_env` fields name an environment variable directly.
+#
+# The sample below is deliberately generic: six databases on one host, mostly
+# read-only, showing every feature you are likely to need. Written out in full
+# like this it looks long, but a real configuration is mostly this and nothing
+# else. See docs/configuration.md for the complete key reference.
+
+server:
+  name: veridb
+  version: 0.2.0
+  instructions: |
+    VeriDB exposes policy-controlled PostgreSQL databases.
+    Start with list_databases to learn which databases exist and which services
+    are enabled for each. Queries are capped by a server-side row limit and
+    statement timeout; when a result is truncated that is reported explicitly,
+    so narrow your WHERE clause rather than assuming you saw everything.
+    Databases listed under `skipped` are configured but unavailable here.
+
+# ---------------------------------------------------------------------------
+# Connections: how to reach a server. Databases below reference these by name.
+# ---------------------------------------------------------------------------
+connections:
+  primary:
+    driver: postgres
+    # The DSN is read from the environment and contains a {database}
+    # placeholder, so one connection serves every database on this host:
+    #   VERIDB_PRIMARY_DSN=postgres://USER:PASSWORD@HOST:PORT/{database}
+    dsn_env: VERIDB_PRIMARY_DSN
+    # Used only to verify which databases exist, so a stale config entry can be
+    # skipped with a warning instead of failing the whole startup.
+    maintenance_database: postgres
+    pool:
+      # Six databases share this host; keep idle connections at zero so merely
+      # starting the server does not open six sockets.
+      max_conns: 5
+      min_conns: 0
+      max_conn_lifetime: 30m
+      max_conn_idle_time: 5m
+
+# ---------------------------------------------------------------------------
+# Services: which tool groups are registered. Disabling a service here removes
+# it globally; a database can also override it individually (see `databases`).
+#
+#   schema  list_databases, list_schemas, list_tables, describe_table, search_columns
+#   query   query, sample_rows
+#   explain explain_query
+#   health  live ping / version probes in veridb_status
+#   write   execute, run_in_transaction - requires a database to opt in
+#   admin   reserved for DDL and maintenance operations
+# ---------------------------------------------------------------------------
+services:
+  schema: true
+  query: true
+  explain: true
+  sample: true
+  health: true
+  write: false
+  admin: false
+
+# ---------------------------------------------------------------------------
+# Defaults: the policy every database inherits. A database only needs to state
+# the fields it wants to change.
+# ---------------------------------------------------------------------------
+defaults:
+  # Master switch. `true` refuses every mutation regardless of allow_* below,
+  # and additionally sets default_transaction_read_only on the server, so the
+  # database itself rejects writes as a second line of defence.
+  read_only: true
+
+  # Fine-grained mutation switches, only meaningful when read_only is false.
+  allow_write: false      # INSERT / UPDATE
+  allow_delete: false     # DELETE
+  allow_ddl: false        # CREATE / ALTER / DROP
+  allow_truncate: false   # TRUNCATE (also requires allow_ddl)
+
+  # Refuse UPDATE/DELETE that has no WHERE clause.
+  require_where_for_mutation: true
+
+  # Bounds applied to every statement.
+  max_rows: 100
+  statement_timeout: 15s
+  max_affected_rows: 1000
+
+  # Schema exposure. allow_schemas is an allowlist; deny_schemas is always
+  # subtracted, even from the allowlist.
+  allow_schemas: [public]
+  deny_schemas: [pg_catalog, information_schema, pg_toast]
+
+  # Never expose these tables. Glob patterns, matched against schema.table.
+  # Every application has bookkeeping tables that only add noise for an agent.
+  deny_tables:
+    - "*.migrations"
+    - "databasechangelog*"
+    - "_prisma_migrations"
+    - "alembic_version"
+
+  # Statements containing any of these substrings are refused. The defaults
+  # cover filesystem access, cross-database links and session disruption.
+  deny_keywords:
+    - pg_read_file
+    - pg_read_binary_file
+    - pg_ls_dir
+    - pg_stat_file
+    - pg_terminate_backend
+    - pg_cancel_backend
+    - lo_import
+    - lo_export
+    - COPY TO PROGRAM
+    - COPY FROM PROGRAM
+    - dblink
+    - pg_sleep
+
+  # Columns whose values are masked before they reach the agent. Glob patterns
+  # matched against schema.table.column. A database can extend this list.
+  redact_columns: []
+
+# ---------------------------------------------------------------------------
+# Audit: every tool call is recorded, including refused ones, which is usually
+# the most interesting part of the trail.
+#
+#   stderr  one readable line per call, visible in the MCP client
+#   file    JSON Lines, append-only, tailed by the audit viewer
+#
+# Point the viewer at the same file to get a searchable web UI (see README).
+# ---------------------------------------------------------------------------
+audit:
+  enabled: true
+  sinks: [stderr, file]
+  file: tmp/audit/veridb-audit.jsonl
+  include_sql: true
+  # Statement parameters can contain PII; leave off unless the audit trail is
+  # itself protected.
+  include_params: false
+  max_value_len: 512
+
+# ---------------------------------------------------------------------------
+# Databases: the explicit allowlist. A name here that does not exist on the
+# host is skipped with a warning at startup - it does not fail the server.
+#
+# Only state what differs from `defaults`.
+# ---------------------------------------------------------------------------
+databases:
+  # The application database. Nothing to override: reads, capped at 100 rows.
+  app:
+    connection: primary
+    description: Application data (users, orders, products)
+    tags: [prod, core]
+
+  # Holds personal data, so it is the strictest entry here: fewer rows per
+  # query, and the sensitive columns are masked before the agent sees them.
+  identity:
+    connection: primary
+    description: Accounts, profiles and KYC documents - contains PII
+    tags: [prod, pii]
+    max_rows: 50
+    redact_columns:
+      - "*.email"
+      - "*.phone"
+      - "*.pan"
+      - "*.aadhaar"
+      - "*.account_number"
+
+  # An event stream with millions of rows. A lower row cap and a longer timeout
+  # because the useful queries here are aggregations, not row lookups.
+  analytics:
+    connection: primary
+    description: Product analytics event stream
+    tags: [analytics]
+    max_rows: 50
+    statement_timeout: 30s
+
+  # Money. Read-only, and the visible row count is deliberately small.
+  billing:
+    connection: primary
+    description: Orders, payments, refunds and payouts
+    tags: [prod, payments]
+    max_rows: 50
+
+  # A CMS with a couple of hundred generated tables. Deny the internal ones so
+  # list_tables stays useful.
+  cms:
+    connection: primary
+    description: Content management tables
+    tags: [cms]
+    deny_tables:
+      - "*.migrations"
+      - "admin_permissions*"
+      - "admin_roles*"
+      - "strapi_*"
+      - "*_cmps"
+      - "*_lnk"
+
+  # -------------------------------------------------------------------------
+  # The one exception: a scratch database an agent is allowed to write to.
+  #
+  # Enabling writes takes two deliberate steps, never one:
+  #   1. the policy must permit the operation (read_only plus allow_*)
+  #   2. the database must opt into the `write` service, because it is off
+  #      globally above
+  #
+  # Note that DELETE and DDL stay closed, and max_affected_rows is deliberately
+  # small, so even a mistaken statement cannot do much. An over-broad statement
+  # is rolled back rather than partially applied.
+  # -------------------------------------------------------------------------
+  sandbox:
+    connection: primary
+    description: Throwaway database for experiments and tests
+    tags: [dev, writable]
+    read_only: false
+    allow_write: true
+    allow_delete: false
+    allow_ddl: false
+    require_where_for_mutation: true
+    statement_timeout: 5s
+    max_rows: 200
+    max_affected_rows: 25
+    services:
+      write: true
+
+  # Kept in the file for documentation but not exposed. A disabled entry never
+  # opens a connection, so this costs nothing.
+  legacy_archive:
+    connection: primary
+    description: Decommissioned archive, kept for reference
+    enabled: false

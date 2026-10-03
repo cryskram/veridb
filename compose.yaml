@@ -1,0 +1,63 @@
+# VeriDB audit viewer stack.
+#
+#   docker compose up -d --build
+#
+# Starts two services:
+#
+#   viewer  tail-loads the JSONL trail veridb writes into SQLite and serves the
+#           audit UI on http://localhost:8080
+#   ngrok   publishes the viewer on a public HTTPS URL
+#
+# The MCP server is deliberately NOT here: it runs on the host as a stdio child
+# of your agent. This stack only makes the audit trail reachable from outside.
+#
+# Required in .env:
+#   VIEWER_TOKEN      shared secret for the audit UI
+#   NGROK_AUTHTOKEN   from https://dashboard.ngrok.com/get-started/your-authtoken
+
+name: veridb
+
+services:
+  viewer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: veridb-viewer:local
+    restart: unless-stopped
+    # Run as the host user so the container can read the 0640 audit trail and
+    # write its SQLite store into the bind-mounted directories. `make viewer-up`
+    # exports VIEWER_UID/VIEWER_GID from `id -u`/`id -g`.
+    user: "${VIEWER_UID:-1000}:${VIEWER_GID:-1000}"
+    environment:
+      AUDIT_FILE: /audit/veridb-audit.jsonl
+      AUDIT_DB: /data/audit.db
+      VIEWER_ADDR: ":8080"
+      VIEWER_TOKEN: ${VIEWER_TOKEN:?set VIEWER_TOKEN in .env}
+      VIEWER_CACHE_TTL: ${VIEWER_CACHE_TTL:-5s}
+      VIEWER_INTERVAL: ${VIEWER_INTERVAL:-2s}
+    volumes:
+      # The trail written by veridb (audit.sinks must include "file").
+      # Read-only: the viewer never modifies the source of truth.
+      - ./tmp/audit:/audit:ro
+      # The viewer's SQLite store. On the host rather than in a named volume so
+      # it is owned by the same user the container runs as.
+      - ./tmp/viewer:/data
+    ports:
+      # Local access without going through the tunnel.
+      - "${VIEWER_PORT:-8080}:8080"
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    depends_on:
+      - viewer
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:?set NGROK_AUTHTOKEN in .env}
+    command:
+      - http
+      - viewer:8080
+      - --log=stdout
+    ports:
+      # ngrok's local API. Read the public URL with:
+      #   curl -s localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url'
+      - "${NGROK_API_PORT:-4040}:4040"
