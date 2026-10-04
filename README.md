@@ -112,6 +112,25 @@ Build the binary first:
 make build     # produces bin/veridb and bin/veridb-viewer
 ```
 
+## How to use
+
+The full walkthrough lives in **[docs/usage.md](docs/usage.md)**. The short
+version:
+
+1. `make config-check` — connect, and see exactly which databases were reached
+   and which were skipped, before any agent is involved.
+2. Tell the agent once: start with `list_databases`, explore with
+   `list_tables` / `describe_table` / `sample_rows`, read through `query` with
+   `$1, $2` parameters, and treat `truncated: true` as "narrow the query".
+3. Let the policy do the rest. Refusals (`read_only`, `missing_where`,
+   `cap_exceeded`, …) name the config change needed, and the audit trail
+   records every call including the refused ones — browse it with
+   `make viewer-up`.
+
+Writes take two deliberate steps for one database: permit the operation in
+policy (`read_only: false` plus the matching `allow_*`) **and** opt into the
+`write` service. Nothing mutates until both are set.
+
 ## Tools
 
 Tools are grouped into **services**, and each service can be enabled globally and
