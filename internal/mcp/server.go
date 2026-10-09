@@ -35,6 +35,7 @@ func NewServer(deps *Deps) *mcp.Server {
 	registerSchemaTools(server, deps)
 	registerQueryTools(server, deps)
 	registerWriteTools(server, deps)
+	registerAdminTools(server, deps)
 	registerStatusTools(server, deps)
 
 	return server
@@ -63,22 +64,34 @@ func (d *Deps) enabledForAny(enabled func(config.Services) bool) bool {
 }
 
 // entry loads a database entry and verifies the requested service is enabled
-// for it, returning an agent-friendly error when it is not.
-func (d *Deps) entry(databaseName, service string, enabled func(config.Services) bool) (*database.Entry, error) {
+// for it, returning an agent-friendly error when it is not. Both the check
+// and the returned config are the session-effective ones, so a write override
+// flips the gate and the policy together: checking one while enforcing the
+// other would either lie to the agent or refuse a legitimate toggle.
+func (d *Deps) entry(databaseName, service string, enabled func(config.Services) bool) (*database.Entry, config.ResolvedDatabase, error) {
 	entry, err := d.Registry.Get(databaseName)
 	if err != nil {
-		return nil, err
+		return nil, config.ResolvedDatabase{}, err
 	}
 
-	if !enabled(entry.Config.Services) {
-		return nil, fmt.Errorf(
-			"the %q service is disabled for database %q; "+
-				"enable services.%s in the VeriDB config for that database to use this tool",
-			service, databaseName, service,
+	eff, err := d.Registry.EffectiveConfig(databaseName)
+	if err != nil {
+		return nil, config.ResolvedDatabase{}, err
+	}
+
+	if !enabled(eff.Services) {
+		hint := "enable services." + service + " in the VeriDB config for that database to use this tool"
+		if service == "write" && eff.Services.Admin {
+			hint = "turn write mode on for that database with the set_write_mode tool, " +
+				"or enable services.write in the VeriDB config"
+		}
+		return nil, config.ResolvedDatabase{}, fmt.Errorf(
+			"the %q service is disabled for database %q; "+hint,
+			service, databaseName,
 		)
 	}
 
-	return entry, nil
+	return entry, eff, nil
 }
 
 // serviceFlags is the JSON shape of a database's enabled services.

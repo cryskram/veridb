@@ -127,12 +127,12 @@ type sampleInput struct {
 func (d *Deps) runQuery(ctx context.Context, in queryInput) (queryOutput, error) {
 	var out queryOutput
 
-	entry, err := d.entry(in.Database, "query", queryToolsEnabled)
+	entry, eff, err := d.entry(in.Database, "query", queryToolsEnabled)
 	if err != nil {
 		return out, err
 	}
 
-	pol := entry.Config.Policy
+	pol := eff.Policy
 	start := time.Now()
 	rec := audit.Record{Tool: "query", Database: in.Database, SQL: in.SQL, Params: in.Params}
 
@@ -204,12 +204,12 @@ func (d *Deps) runQuery(ctx context.Context, in queryInput) (queryOutput, error)
 func (d *Deps) runExplain(ctx context.Context, in explainInput) (explainOutput, error) {
 	var out explainOutput
 
-	entry, err := d.entry(in.Database, "explain", explainToolsEnabled)
+	entry, eff, err := d.entry(in.Database, "explain", explainToolsEnabled)
 	if err != nil {
 		return out, err
 	}
 
-	pol := entry.Config.Policy
+	pol := eff.Policy
 	start := time.Now()
 	rec := audit.Record{Tool: "explain_query", Database: in.Database, SQL: in.SQL, Params: in.Params}
 
@@ -221,11 +221,27 @@ func (d *Deps) runExplain(ctx context.Context, in explainInput) (explainOutput, 
 	// EXPLAIN ANALYZE executes the statement. Explaining a mutation therefore
 	// needs the write service, otherwise an agent could run DML through the
 	// explain tool.
-	if stmt.Kind != guard.KindRead && !entry.Config.Services.Write {
+	if stmt.Kind != guard.KindRead && !eff.Services.Write {
 		err := denial(
 			"not_allowed",
 			"explaining a %s with analyze executes it, so the write service must be enabled "+
 				"for database %q; without it only read statements can be explained",
+			stmt.Kind, in.Database,
+		)
+		return out, d.finish(rec, start, err)
+	}
+
+	// EXPLAIN ANALYZE runs in an implicit transaction, which a read-only pool
+	// refuses even when a session override allows writes — there is no
+	// statement boundary at which to declare it writable. Fail cleanly instead
+	// of surfacing a PostgreSQL read-only error.
+	if in.Analyze && stmt.Kind != guard.KindRead && entry.Config.Policy.ReadOnly {
+		err := denial(
+			"not_allowed",
+			"cannot ANALYZE a %s on database %q because its connection pool is read-only "+
+				"(write mode is a session override, or the config leaves read_only on); "+
+				"set read_only: false for it in the VeriDB config to collect execution "+
+				"timings of mutations",
 			stmt.Kind, in.Database,
 		)
 		return out, d.finish(rec, start, err)
@@ -279,7 +295,7 @@ func (d *Deps) runExplain(ctx context.Context, in explainInput) (explainOutput, 
 func (d *Deps) runSample(ctx context.Context, in sampleInput) (queryOutput, error) {
 	var out queryOutput
 
-	entry, err := d.entry(in.Database, "sample", sampleToolsEnabled)
+	entry, eff, err := d.entry(in.Database, "sample", sampleToolsEnabled)
 	if err != nil {
 		return out, err
 	}
@@ -288,7 +304,7 @@ func (d *Deps) runSample(ctx context.Context, in sampleInput) (queryOutput, erro
 		return out, denial("identifier", "schema and table are both required")
 	}
 
-	pol := entry.Config.Policy
+	pol := eff.Policy
 	limit, notice := effectiveLimit(pol.MaxRows, in.Limit)
 	if in.Limit == 0 {
 		// A sample is meant to be small; 10 is a better default than max_rows.

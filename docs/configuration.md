@@ -143,7 +143,7 @@ services:
 | `sample` | `true` | `sample_rows` |
 | `health` | `true` | Live ping and version probe inside `veridb_status` |
 | `write` | `false` | `execute`, `run_in_transaction` |
-| `admin` | `false` | Reserved for DDL and maintenance operations |
+| `admin` | `false` | `set_write_mode` — the session write-mode toggle |
 
 `list_databases` and `veridb_status` are always available: an agent must be able
 to discover what it has and why something is missing.
@@ -316,6 +316,27 @@ databases:
     services:
       write: true            # opt into the write tool group
 ```
+
+### Toggling write mode at runtime
+
+For a database the agent should only *sometimes* write to, skip the YAML and
+grant the `admin` service instead. `set_write_mode` then flips that database
+between `read-only` and `read-write` for the rest of the session:
+
+```yaml
+databases:
+  sandbox:
+    connection: primary
+    services:
+      admin: true            # this database's write mode is toggleable
+```
+
+Enabling requires `confirm: "enable-writes"`; disabling needs no
+confirmation. The override opens INSERT and UPDATE only — DELETE, DDL,
+TRUNCATE, caps and timeouts are untouched — lives in memory (a restart drops
+it), is shown as `session_override` by `list_databases` and `veridb_status`,
+and is audit-logged with the before/after mode. See
+[docs/usage.md](usage.md#toggling-write-mode-from-pi) for the pi-side flow.
 
 ### Keeping noisy tables out of view
 

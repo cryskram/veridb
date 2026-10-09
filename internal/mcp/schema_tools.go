@@ -23,6 +23,9 @@ type databaseInfo struct {
 	Connection  string       `json:"connection"`
 	Mode        string       `json:"mode" jsonschema:"read-only or read-write"`
 	Services    serviceFlags `json:"services"`
+	// SessionOverride is true when write mode was toggled on for this session
+	// via set_write_mode; it resets on restart.
+	SessionOverride bool `json:"session_override,omitempty"`
 }
 
 type listDatabasesOutput struct {
@@ -92,15 +95,19 @@ func registerSchemaTools(server *mcp.Server, deps *Deps) {
 			}
 
 			for _, entry := range deps.Registry.Entries() {
-				cfg := entry.Config
+				cfg, err := deps.Registry.EffectiveConfig(entry.Config.Name)
+				if err != nil {
+					cfg = entry.Config // unreachable: the entry was just listed
+				}
 				out.Databases = append(out.Databases, databaseInfo{
-					Name:        cfg.Name,
-					Database:    cfg.Database,
-					Description: cfg.Description,
-					Tags:        cfg.Tags,
-					Connection:  cfg.Connection,
-					Mode:        cfg.Policy.Summarize(),
-					Services:    flagsOf(cfg.Services),
+					Name:            cfg.Name,
+					Database:        cfg.Database,
+					Description:     cfg.Description,
+					Tags:            cfg.Tags,
+					Connection:      cfg.Connection,
+					Mode:            cfg.Policy.Summarize(),
+					Services:        flagsOf(cfg.Services),
+					SessionOverride: deps.Registry.WriteMode(entry.Config.Name),
 				})
 			}
 
@@ -119,7 +126,7 @@ func registerSchemaTools(server *mcp.Server, deps *Deps) {
 			Description: "List the user-visible schemas of a database.",
 		},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in listSchemasInput) (*mcp.CallToolResult, listSchemasOutput, error) {
-			if _, err := deps.entry(in.Database, "schema", schemaToolsEnabled); err != nil {
+			if _, _, err := deps.entry(in.Database, "schema", schemaToolsEnabled); err != nil {
 				return nil, listSchemasOutput{}, err
 			}
 
@@ -141,7 +148,7 @@ func registerSchemaTools(server *mcp.Server, deps *Deps) {
 				"they are cheap and approximate: use them to avoid scanning huge tables.",
 		},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in listTablesInput) (*mcp.CallToolResult, listTablesOutput, error) {
-			if _, err := deps.entry(in.Database, "schema", schemaToolsEnabled); err != nil {
+			if _, _, err := deps.entry(in.Database, "schema", schemaToolsEnabled); err != nil {
 				return nil, listTablesOutput{}, err
 			}
 
@@ -177,7 +184,7 @@ func registerSchemaTools(server *mcp.Server, deps *Deps) {
 				"comment and whether the column is part of the primary key.",
 		},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in describeTableInput) (*mcp.CallToolResult, describeTableOutput, error) {
-			if _, err := deps.entry(in.Database, "schema", schemaToolsEnabled); err != nil {
+			if _, _, err := deps.entry(in.Database, "schema", schemaToolsEnabled); err != nil {
 				return nil, describeTableOutput{}, err
 			}
 			if in.Schema == "" || in.Table == "" {
@@ -211,7 +218,7 @@ func registerSchemaTools(server *mcp.Server, deps *Deps) {
 				"PII or a foreign key before writing a query. Accepts a substring or an ILIKE pattern.",
 		},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in searchColumnsInput) (*mcp.CallToolResult, searchColumnsOutput, error) {
-			if _, err := deps.entry(in.Database, "schema", schemaToolsEnabled); err != nil {
+			if _, _, err := deps.entry(in.Database, "schema", schemaToolsEnabled); err != nil {
 				return nil, searchColumnsOutput{}, err
 			}
 			if strings.TrimSpace(in.Pattern) == "" {

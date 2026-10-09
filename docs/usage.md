@@ -31,7 +31,10 @@ make config-check CONFIG=configs/veridb.local.yaml
 
 ## 2. Hand it to your agent
 
-Register the server in `~/.config/mcp/mcp.json` (after `make build`):
+Register the server in `~/.pi/agent/mcp.json` (after `make build`; run
+`pi mcp list` to validate). For one project only, add it with
+`pi mcp add veridb --local -- <command> [args...]` from that directory instead,
+which writes `.pi/mcp.json` there:
 
 ```json
 {
@@ -114,6 +117,38 @@ affect more than `max_affected_rows` — the count is only knowable after the
 fact, so committing first would make an over-broad `UPDATE` unrecoverable.
 `run_in_transaction` runs several statements all-or-nothing, checking every one
 before running any of them.
+
+### Toggling write mode from pi
+
+Editing YAML for a quick write is heavy, so a database with
+`services.admin: true` can be toggled at runtime with `set_write_mode`:
+
+```yaml
+databases:
+  sandbox:
+    services:
+      admin: true            # whoever can toggle this DB's write mode
+```
+
+> "Turn write mode on for sandbox."
+>
+> `set_write_mode(database="sandbox", mode="read-write", confirm="enable-writes")`
+> → mode `read-write`, previous `read-only`, session override active.
+
+Enabling needs `confirm: "enable-writes"` stated explicitly; turning it off
+needs no confirmation. The rules of the toggle:
+
+- **Session-only.** It lives in memory and a server restart drops it. The YAML
+  stays the source of truth, and the enable response prints the YAML edit that
+  would make the mode permanent.
+- **INSERT and UPDATE only.** DELETE, DDL, TRUNCATE, caps and timeouts stay
+  exactly as configured.
+- **Visible.** `list_databases` and `veridb_status` show the effective mode
+  plus `session_override: true` while it lasts.
+- **Audited.** Every toggle is recorded with the before/after mode.
+- **One limitation.** `explain_query` with `analyze` on a mutation needs a
+  config-level writable pool (it runs in an implicit transaction the server
+  cannot declare writable), and says so cleanly instead of failing obscurely.
 
 ## 6. Watching what happened
 

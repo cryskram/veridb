@@ -20,9 +20,12 @@ type databaseStatus struct {
 	Database string       `json:"database"`
 	Mode     string       `json:"mode"`
 	Services serviceFlags `json:"services"`
-	Healthy  *bool        `json:"healthy,omitempty"`
-	Version  string       `json:"version,omitempty"`
-	Error    string       `json:"error,omitempty"`
+	// SessionOverride is true when write mode was toggled on for this session
+	// via set_write_mode; it resets on restart.
+	SessionOverride bool   `json:"session_override,omitempty"`
+	Healthy         *bool  `json:"healthy,omitempty"`
+	Version         string `json:"version,omitempty"`
+	Error           string `json:"error,omitempty"`
 }
 
 type statusOutput struct {
@@ -55,11 +58,16 @@ func registerStatusTools(server *mcp.Server, deps *Deps) {
 
 			var wg sync.WaitGroup
 			for i, entry := range entries {
+				eff, err := deps.Registry.EffectiveConfig(entry.Config.Name)
+				if err != nil {
+					eff = entry.Config // unreachable: the entry was just listed
+				}
 				status := databaseStatus{
-					Name:     entry.Config.Name,
-					Database: entry.Config.Database,
-					Mode:     entry.Config.Policy.Summarize(),
-					Services: flagsOf(entry.Config.Services),
+					Name:            entry.Config.Name,
+					Database:        entry.Config.Database,
+					Mode:            eff.Policy.Summarize(),
+					Services:        flagsOf(eff.Services),
+					SessionOverride: deps.Registry.WriteMode(entry.Config.Name),
 				}
 				out.Databases[i] = status
 

@@ -88,7 +88,9 @@ choices keep it that way:
 
 ## Registering with pi
 
-pi reads MCP servers from `~/.config/mcp/mcp.json`:
+pi reads user-level MCP servers from `~/.pi/agent/mcp.json` (validate with
+`pi mcp list`; a project-scoped server goes in `.pi/mcp.json` instead — see
+[docs/usage.md](docs/usage.md)):
 
 ```json
 {
@@ -129,7 +131,10 @@ version:
 
 Writes take two deliberate steps for one database: permit the operation in
 policy (`read_only: false` plus the matching `allow_*`) **and** opt into the
-`write` service. Nothing mutates until both are set.
+`write` service. Nothing mutates until both are set. For databases the agent
+should only *sometimes* write to, grant `services.admin` instead and toggle
+with `set_write_mode` — session-only, INSERT/UPDATE only, and confirmed
+explicitly. Details in [docs/usage.md](docs/usage.md).
 
 ## Tools
 
@@ -150,6 +155,7 @@ all, so an agent never sees a tool it cannot use.
 | `explain_query` | `explain` | Query plan; `analyze=true` executes it |
 | `execute` | `write` | One mutation, inside a transaction, rolled back if over the row cap |
 | `run_in_transaction` | `write` | Several statements, all or nothing |
+| `set_write_mode` | `admin` | Toggle one database read-only/read-write for this session |
 
 `list_databases` is the intended entry point: it says which databases exist and
 which services each one allows, so an agent learns the terrain before acting.

@@ -50,6 +50,10 @@ type Record struct {
 	// Reason is a stable denial code such as "read_only" or "missing_where".
 	Reason string `json:"reason,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Note carries free-form context for calls that have no SQL, such as
+	// set_write_mode transitions. The viewer ignores fields it does not
+	// store, so this is safe for old and new trails alike.
+	Note string `json:"note,omitempty"`
 	// Client identifies the MCP client when the transport exposes one.
 	Client string `json:"client,omitempty"`
 }

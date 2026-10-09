@@ -25,12 +25,18 @@ type Registry struct {
 	entries  map[string]*Entry
 	order    []string
 	warnings []Warning
+	// writeMode holds session-scoped write overrides set through the
+	// set_write_mode tool. The base config is never mutated: the override is
+	// consulted whenever the effective policy or services are needed, and a
+	// server restart drops every override. Guarded by mu like everything else.
+	writeMode map[string]bool
 }
 
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		entries: map[string]*Entry{},
+		entries:   map[string]*Entry{},
+		writeMode: map[string]bool{},
 	}
 }
 
@@ -226,6 +232,62 @@ func discoverDatabases(
 	}
 
 	return available, warnings
+}
+
+// SetWriteMode enables or clears the session write override for a connected
+// database. Enabling flips the effective policy to read-write (INSERT and
+// UPDATE) and exposes the write service for that database; every other
+// policy flag — DELETE, DDL, TRUNCATE, caps, timeouts — stays exactly as
+// configured. Disabling drops the override and the base config applies again.
+// Unknown names are rejected so a typo cannot silently do nothing.
+func (r *Registry) SetWriteMode(name string, on bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.entries[name]; !ok {
+		return fmt.Errorf("database %q is not available (see list_databases for the enabled set)", name)
+	}
+
+	if on {
+		r.writeMode[name] = true
+	} else {
+		delete(r.writeMode, name)
+	}
+
+	return nil
+}
+
+// WriteMode reports whether the session write override is active for name.
+// Unknown names report false.
+func (r *Registry) WriteMode(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return r.writeMode[name]
+}
+
+// EffectiveConfig returns a copy of the named entry's resolved config with
+// the session write override applied. Handlers must enforce against this,
+// never against the entry's base config, or a toggle would change the
+// display while the guard kept refusing. The copy shares the base slices,
+// which is safe because the override only flips boolean fields.
+func (r *Registry) EffectiveConfig(name string) (config.ResolvedDatabase, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	entry, ok := r.entries[name]
+	if !ok {
+		return config.ResolvedDatabase{}, fmt.Errorf("database %q is not available (see list_databases for the enabled set)", name)
+	}
+
+	cfg := entry.Config
+	if r.writeMode[name] {
+		cfg.Policy.ReadOnly = false
+		cfg.Policy.AllowWrite = true
+		cfg.Services.Write = true
+	}
+
+	return cfg, nil
 }
 
 func newDriver(ctx context.Context, db config.ResolvedDatabase) (Driver, error) {

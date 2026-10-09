@@ -44,7 +44,11 @@ type executeOutput struct {
 }
 
 func registerWriteTools(server *mcp.Server, deps *Deps) {
-	if !deps.enabledForAny(writeToolsEnabled) {
+	// The write tools also register when only the admin service is on: that is
+	// exactly the setup where set_write_mode has something to unlock. The
+	// per-call gate still refuses every database whose effective services
+	// leave write off.
+	if !deps.enabledForAny(writeToolsEnabled) && !deps.enabledForAny(adminToolsEnabled) {
 		return
 	}
 
@@ -83,7 +87,7 @@ func registerWriteTools(server *mcp.Server, deps *Deps) {
 func (d *Deps) runExecute(ctx context.Context, in executeInput) (executeOutput, error) {
 	var out executeOutput
 
-	entry, err := d.entry(in.Database, "write", writeToolsEnabled)
+	entry, eff, err := d.entry(in.Database, "write", writeToolsEnabled)
 	if err != nil {
 		return out, err
 	}
@@ -91,7 +95,7 @@ func (d *Deps) runExecute(ctx context.Context, in executeInput) (executeOutput, 
 	start := time.Now()
 	rec := audit.Record{Tool: "execute", Database: in.Database, SQL: in.SQL, Params: in.Params}
 
-	stmt, err := guard.Check(in.SQL, entry.Config.Policy, in.Database)
+	stmt, err := guard.Check(in.SQL, eff.Policy, in.Database)
 	if err != nil {
 		return out, d.finish(rec, start, err)
 	}
@@ -111,7 +115,12 @@ func (d *Deps) runExecute(ctx context.Context, in executeInput) (executeOutput, 
 		return out, d.finish(rec, start, err)
 	}
 
-	cap := entry.Config.Policy.MaxAffectedRows
+	if err := declareWritable(ctx, tx); err != nil {
+		_ = tx.Rollback(ctx)
+		return out, d.finish(rec, start, err)
+	}
+
+	cap := eff.Policy.MaxAffectedRows
 
 	out, err = d.execInTx(ctx, entry, tx, stmt, params, in.Database)
 	if err != nil {
@@ -153,7 +162,7 @@ func (d *Deps) runExecute(ctx context.Context, in executeInput) (executeOutput, 
 func (d *Deps) runTransaction(ctx context.Context, in transactionInput) (executeOutput, error) {
 	var out executeOutput
 
-	entry, err := d.entry(in.Database, "write", writeToolsEnabled)
+	entry, eff, err := d.entry(in.Database, "write", writeToolsEnabled)
 	if err != nil {
 		return out, err
 	}
@@ -186,7 +195,7 @@ func (d *Deps) runTransaction(ctx context.Context, in transactionInput) (execute
 	preparedStatements := make([]prepared, 0, len(in.Statements))
 
 	for i, s := range in.Statements {
-		stmt, err := guard.Check(s.SQL, entry.Config.Policy, in.Database)
+		stmt, err := guard.Check(s.SQL, eff.Policy, in.Database)
 		if err != nil {
 			return out, d.finish(rec, start, fmt.Errorf("statement %d: %w", i+1, err))
 		}
@@ -204,7 +213,12 @@ func (d *Deps) runTransaction(ctx context.Context, in transactionInput) (execute
 		return out, d.finish(rec, start, err)
 	}
 
-	cap := entry.Config.Policy.MaxAffectedRows
+	if err := declareWritable(ctx, tx); err != nil {
+		_ = tx.Rollback(ctx)
+		return out, d.finish(rec, start, err)
+	}
+
+	cap := eff.Policy.MaxAffectedRows
 
 	for i, p := range preparedStatements {
 		result, err := d.execInTx(ctx, entry, tx, p.stmt, p.params, in.Database)
