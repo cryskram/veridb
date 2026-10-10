@@ -1,6 +1,7 @@
 package database
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -92,6 +93,34 @@ func TestWriteModeRoundTrip(t *testing.T) {
 	}
 	if !eff.Policy.ReadOnly || eff.Services.Write {
 		t.Error("effective config should equal the base config again")
+	}
+}
+
+func TestConnectivityFailure(t *testing.T) {
+	unreachable := []string{
+		`failed to connect to user=postgres: 10.255.255.1:5432: dial error: timeout: context deadline exceeded`,
+		`dial tcp 10.0.0.1:5432: connect: connection refused`,
+		`dial tcp: lookup db.internal: no such host`,
+		`dial tcp 10.0.0.1:5432: connect: network is unreachable`,
+		`lookup db.internal: temporary failure in name resolution`,
+		`read tcp: connection reset by peer`,
+	}
+	for _, msg := range unreachable {
+		if !connectivityFailure(errors.New(msg)) {
+			t.Errorf("connectivityFailure(%q) = false, want true", msg)
+		}
+	}
+
+	reachable := []string{
+		`password authentication failed for user "superman"`,
+		`permission denied for database postgres`,
+		`database "ghost_db" does not exist`,
+		`tls: certificate verification failed`,
+	}
+	for _, msg := range reachable {
+		if connectivityFailure(errors.New(msg)) {
+			t.Errorf("connectivityFailure(%q) = true, want false (host is alive)", msg)
+		}
 	}
 }
 

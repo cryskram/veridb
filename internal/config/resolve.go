@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -193,6 +194,13 @@ func (c *Config) resolveAudit() ResolvedAudit {
 	}
 	if c.Audit.File != "" {
 		a.File = c.Audit.File
+		// A relative audit path anchors to the config file, not to the
+		// process working directory: an MCP client may launch the server
+		// from any session folder, and the trail must still land in one
+		// place (where the viewer looks for it).
+		if !filepath.IsAbs(a.File) && c.Path != "" {
+			a.File = filepath.Join(filepath.Dir(c.Path), a.File)
+		}
 	}
 	setBool(&a.IncludeSQL, c.Audit.IncludeSQL)
 	setBool(&a.IncludeParams, c.Audit.IncludeParams)

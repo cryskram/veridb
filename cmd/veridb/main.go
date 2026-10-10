@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/cryskram/veridb/internal/audit"
 	"github.com/cryskram/veridb/internal/config"
@@ -60,7 +61,15 @@ func run() error {
 		return err
 	}
 
-	registry, err := database.Build(ctx, resolved, log.Printf)
+	// Bound the whole connect phase. Individual dials and pings already have
+	// their own shorter deadlines; this is the backstop that turns a wedged
+	// network into a fast, loud failure instead of a server that never
+	// answers its first MCP handshake. Serving uses the background context
+	// and is unaffected.
+	buildCtx, cancel := context.WithTimeout(ctx, startupTimeout)
+	defer cancel()
+
+	registry, err := database.Build(buildCtx, resolved, log.Printf)
 	if err != nil {
 		return err
 	}
@@ -99,6 +108,9 @@ func run() error {
 
 	return server.Run(ctx, &mcp.StdioTransport{})
 }
+
+// startupTimeout bounds the whole database connect phase at boot.
+const startupTimeout = 90 * time.Second
 
 func defaultConfigPath() string {
 	if path := os.Getenv("VERIDB_CONFIG"); path != "" {

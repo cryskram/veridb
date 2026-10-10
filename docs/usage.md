@@ -153,7 +153,9 @@ needs no confirmation. The rules of the toggle:
 ## 6. Watching what happened
 
 Every call, including refusals, is appended to the JSONL audit trail
-(`audit.sinks` → `file`). To browse it:
+(`audit.sinks` → `file`). A relative trail path always resolves against the
+config file's directory, so launching from another folder never litters that
+project with a `tmp/audit/` directory. To browse it:
 
 ```bash
 make viewer-up    # docker compose up, then prints the public ngrok URL

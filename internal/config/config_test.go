@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -425,6 +427,71 @@ audit:
 	}
 	if !resolved.Audit.IncludeSQL {
 		t.Error("include_sql should default to true")
+	}
+}
+
+func TestAuditFileAnchorsToConfigDir(t *testing.T) {
+	src := minimalYAML + `
+audit:
+  sinks: [stderr, file]
+  file: tmp/audit/veridb-audit.jsonl
+`
+
+	// Loaded from an absolute config path, a relative audit file anchors to
+	// the config directory — never to the process working directory.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "configs", "veridb.yaml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadWithEnv(cfgPath, fakeEnv(map[string]string{"PG_PASSWORD": "x"}))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Path != cfgPath {
+		t.Errorf("Path = %q, want %q", cfg.Path, cfgPath)
+	}
+
+	resolved, err := cfg.ResolveWithEnv(fakeEnv(map[string]string{"PG_PASSWORD": "x"}))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	want := filepath.Join(dir, "configs", "tmp", "audit", "veridb-audit.jsonl")
+	if resolved.Audit.File != want {
+		t.Errorf("file = %q, want %q", resolved.Audit.File, want)
+	}
+
+	// Absolute audit paths pass through untouched, and a config without a
+	// known path keeps the relative form (backwards compatible).
+	cfg2, err := parse(t, minimalYAML+"\naudit:\n  sinks: [file]\n  file: /tmp/audit.jsonl\n",
+		map[string]string{"PG_PASSWORD": "x"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cfg2.Path = filepath.Join(dir, "configs", "veridb.yaml")
+	resolved2, err := cfg2.ResolveWithEnv(fakeEnv(map[string]string{"PG_PASSWORD": "x"}))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if resolved2.Audit.File != "/tmp/audit.jsonl" {
+		t.Errorf("absolute file = %q, want untouched", resolved2.Audit.File)
+	}
+
+	cfg3, err := parse(t, minimalYAML+"\naudit:\n  sinks: [file]\n  file: tmp/audit.jsonl\n",
+		map[string]string{"PG_PASSWORD": "x"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	resolved3, err := cfg3.ResolveWithEnv(fakeEnv(map[string]string{"PG_PASSWORD": "x"}))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if resolved3.Audit.File != "tmp/audit.jsonl" {
+		t.Errorf("pathless file = %q, want relative passthrough", resolved3.Audit.File)
 	}
 }
 

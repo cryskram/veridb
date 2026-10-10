@@ -21,6 +21,14 @@ const (
 	defaultMaxConnLifetime   = time.Hour
 	defaultMaxConnIdleTime   = 30 * time.Minute
 	defaultHealthCheckPeriod = time.Minute
+	// defaultDialTimeout bounds a single TCP handshake. Without it a
+	// blackholed host stalls startup with no deadline, because the server
+	// builds with a background context. An explicit connect_timeout in the
+	// DSN still wins. Five seconds is generous for a handshake (normally
+	// milliseconds) while keeping a dead host to a short, bounded wait.
+	defaultDialTimeout = 5 * time.Second
+	// pingTimeout bounds the initial liveness check per database.
+	pingTimeout = 15 * time.Second
 )
 
 // Postgres is the pgx-backed Driver implementation.
@@ -36,6 +44,10 @@ func NewPostgres(ctx context.Context, opts ConnectionOptions) (*Postgres, error)
 	poolCfg, err := pgxpool.ParseConfig(opts.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("parse dsn: %w", err)
+	}
+
+	if poolCfg.ConnConfig.ConnectTimeout == 0 {
+		poolCfg.ConnConfig.ConnectTimeout = defaultDialTimeout
 	}
 
 	poolCfg.MaxConns = int32Or(opts.Pool.MaxConns, defaultMaxConns)
@@ -71,7 +83,9 @@ func NewPostgres(ctx context.Context, opts ConnectionOptions) (*Postgres, error)
 		return nil, fmt.Errorf("create pool: %w", err)
 	}
 
-	if err := pool.Ping(ctx); err != nil {
+	pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ping: %w", err)
 	}
@@ -204,7 +218,21 @@ func (t *postgresTx) Rollback(ctx context.Context) error {
 // via maintenanceDSN. It is a standalone function rather than a method because
 // it must work before any per-database pool exists.
 func ListServerDatabases(ctx context.Context, maintenanceDSN string) (map[string]struct{}, error) {
-	conn, err := pgx.Connect(ctx, maintenanceDSN)
+	// Bound the whole listing, and give the dial itself a deadline: a DSN
+	// parsed without connect_timeout has none, and this runs on the startup
+	// path where a blackholed host must fail fast, not hang.
+	ctx, cancel := context.WithTimeout(ctx, pingTimeout)
+	defer cancel()
+
+	pgxCfg, err := pgx.ParseConfig(maintenanceDSN)
+	if err != nil {
+		return nil, fmt.Errorf("parse maintenance dsn: %w", err)
+	}
+	if pgxCfg.ConnectTimeout == 0 {
+		pgxCfg.ConnectTimeout = defaultDialTimeout
+	}
+
+	conn, err := pgx.ConnectConfig(ctx, pgxCfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect to maintenance database: %w", err)
 	}

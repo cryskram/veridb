@@ -24,6 +24,11 @@ type Config struct {
 	Connections map[string]ConnectionConfig `yaml:"connections"`
 	Databases   map[string]DatabaseConfig   `yaml:"databases"`
 	Audit       AuditConfig                 `yaml:"audit"`
+	// Path is the file this config was loaded from. Relative paths inside
+	// the config (currently the audit file) resolve against its directory,
+	// so the server behaves the same no matter which working directory an
+	// MCP client launches it from.
+	Path string `yaml:"-"`
 }
 
 // ServerConfig describes the MCP server identity.
@@ -153,6 +158,8 @@ func LoadWithEnv(path string, lookup EnvLookup) (*Config, error) {
 	if cfg.Server.Version == "" {
 		cfg.Server.Version = "0.0.0"
 	}
+
+	cfg.Path = path
 
 	return &cfg, nil
 }

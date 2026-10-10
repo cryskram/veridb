@@ -360,6 +360,12 @@ audit:
   max_value_len: 512
 ```
 
+A relative `file` resolves against the config file's directory, not the
+process working directory — an MCP client may launch the server from any
+session folder, and the trail must still land in one place (where the viewer
+looks for it) rather than scattering `tmp/audit/` across projects.
+Absolute paths pass through untouched.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | Master switch |
